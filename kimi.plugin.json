@@ -1,0 +1,20 @@
+{
+  "name": "worktree-guard",
+  "version": "1.0.0",
+  "description": "强制 git worktree 工作流：所有开发在隔离副本进行，主 checkout 写保护，合并需授权（PreToolUse hook 硬约束 + Agent 技能）",
+  "keywords": ["git", "worktree", "workflow", "guard", "hooks"],
+  "license": "MIT",
+  "skills": "./skills/",
+  "hooks": [
+    {
+      "event": "PreToolUse",
+      "matcher": "Write|Edit|Bash",
+      "command": "python ./hooks/guard_worktree.py",
+      "timeout": 10
+    }
+  ],
+  "interface": {
+    "displayName": "Worktree Guard",
+    "shortDescription": "强制 git worktree 工作流：主 checkout 写保护 + 副本管理 + 合并授权"
+  }
+}
