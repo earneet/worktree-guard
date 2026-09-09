@@ -101,8 +101,18 @@ def main():
 
     common, wt_gitdir = find_repo(cwd)
 
-    # 1) 有活动 worktree 登记 → 状态栏显示活动副本（Agent 真实工作位置）
+    # 让位规则（与 guard_worktree.py 同契约）：主 checkout 根存在仓库专用守卫的
+    # 状态文件（.kimi/worktree-state.json）时，本插件的活动状态不再展示，
+    # 避免两套守卫并存时状态栏显示本插件的空/旧状态造成误导。
+    yield_to_repo_guard = False
     if common:
+        try:
+            yield_to_repo_guard = (common.parent / ".kimi" / "worktree-state.json").exists()
+        except Exception:
+            pass
+
+    # 1) 有活动 worktree 登记 → 状态栏显示活动副本（Agent 真实工作位置）
+    if common and not yield_to_repo_guard:
         state = None
         try:
             state = json.loads((common / STATE_DIR_NAME / "state.json").read_text(encoding="utf-8"))

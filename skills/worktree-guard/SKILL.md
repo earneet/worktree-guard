@@ -34,10 +34,16 @@ echo '{"path": ".worktrees/worktree-add-drop-module"}' | python "${KIMI_SKILL_DI
 # 退出当前活动 worktree（保留副本，汇报领先提交与未提交改动）
 echo '{"action": "keep"}' | python "${KIMI_SKILL_DIR}/../../scripts/wt.py" exit
 
-# 删除副本（需显式确认且工作区干净；只删目录，分支保留）
+# 删除副本（需显式确认且工作区干净；只删目录，分支保留；目录已被外部删除时幂等成功）
 echo '{"action": "remove", "confirm_remove": true}' | python "${KIMI_SKILL_DIR}/../../scripts/wt.py" exit
 
+# 删除副本并一并删除分支（须与 confirm_remove 同传；仅当分支已合并进 base 才删，
+# 用 git merge-base --is-ancestor 校验，未合并明确拒绝并保留分支）
+echo '{"action": "remove", "confirm_remove": true, "delete_branch": true}' | python "${KIMI_SKILL_DIR}/../../scripts/wt.py" exit
+
 # 授权在主 checkout 上修改/合并（需用户明确授权后才可调用）
+# ⚠️ authorize-main 与后续受守卫的变更命令（git merge 等）必须分两次工具/Bash 调用：
+#    hook 在执行前对整个命令串预检，`authorize-main && git merge` 连写仍会被拦截。
 echo '{"reason": "用户授权合并 worktree-add-drop-module"}' | python "${KIMI_SKILL_DIR}/../../scripts/wt.py" authorize-main
 
 # 撤销授权（授权操作完成后立即执行）
@@ -62,7 +68,9 @@ echo '{}' | python "${KIMI_SKILL_DIR}/../../scripts/wt.py" revoke-main
 
 5. **合并 worktree 到主分支**（用户明确说"合并"后）：
    - `authorize-main` 记录授权原因 → 在主 checkout 执行合并 → 立即 `revoke-main`；
-   - 合并经用户确认后，才可 `exit(action="remove")` 清理副本目录（分支保留）。
+   - ⚠️ 授权与合并命令必须分两次工具/Bash 调用（hook 对整条命令串预检，连写仍被拦）；
+   - 合并经用户确认后，才可 `exit(action="remove")` 清理副本目录（默认分支保留；
+     分支已合并且用户确认删除时，可加 `delete_branch=true` 一并删分支）。
 
 6. **极少数直改主 checkout 的情况**（如改仓库级文档）：
    - 先获得用户明确授权 → `authorize-main` → 修改 → 立即 `revoke-main`。
@@ -72,6 +80,15 @@ echo '{}' | python "${KIMI_SKILL_DIR}/../../scripts/wt.py" revoke-main
 - 副本默认位置：`<主 checkout>/.worktrees/worktree-<task-name>/`（自动加入 `.git/info/exclude`）
 - 状态文件：git common dir 下 `worktree-guard/state.json`（天然不被 git 追踪，所有副本共享）
 - 分支名：`worktree-<task-name>`，base 记录在 `worktree-guard/bases.json`
+- 仓库级配置（可选）：主 checkout 根 `.kimi/worktree-guard.json`，支持
+  `post_create_commands`（字符串数组）——create 完成后在新副本内逐个 best-effort 执行
+  （cwd=新副本，失败只警告），用于仓库特定的编译环境准备
+
+## 与仓库专用守卫共存（让位规则）
+
+若目标仓库主 checkout 根存在 `.kimi/worktree-state.json`（另一套仓库专用守卫系统的
+状态文件），本插件的 hook 对该仓库**完全静默放行**（通用守卫让位给专用守卫），状态栏
+也不再展示本插件的活动副本状态。检测只做文件存在性判断，廉价、只读、fail-open。
 
 ## 纪律兜底（PreToolUse hook）
 

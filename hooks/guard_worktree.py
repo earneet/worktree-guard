@@ -10,6 +10,8 @@
    拦截 git merge/rebase/pull，防止未授权把 worktree 分支合入。
 5. 在 worktree 副本内，拦截 git checkout/switch 到受保护分支、删除 worktree 分支、
    push 到 master/main 等违反工作流的操作。
+6. 让位规则：主 checkout 根存在 .kimi/worktree-state.json（仓库专用守卫的状态文件）
+   时，本 hook 对该仓库完全静默放行——通用守卫让位给专用守卫。
 
 所有拦截都通过 stderr 把完整上下文（当前分支、位置、活动 worktree、目标路径/命令）
 反馈给 LLM，确保模型在操作前一定意识到自己在哪、该往哪写。
@@ -253,6 +255,14 @@ def main():
     common = git_common_dir(cwd)
     if common is None:
         return  # 非 git 仓库 → 放行
+
+    # ---- 让位规则：与仓库级专用守卫共存 ----
+    # 若主 checkout 根存在 .kimi/worktree-state.json，说明该仓库部署了另一套
+    # 更具体的仓库专用守卫系统（那是它的状态文件）。共存契约：通用守卫让位给
+    # 专用守卫，本 hook 对该仓库完全静默放行，避免两套守卫重复拦截、反馈互相打架。
+    # 检测只做文件存在性判断：廉价、只读，且整体 fail-open（外层异常兜底照常放行）。
+    if (Path(os.path.dirname(common)) / ".kimi" / "worktree-state.json").exists():
+        return
 
     tool_name = ctx.get("tool_name") or ""
     tool_input = ctx.get("tool_input") or {}

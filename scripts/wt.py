@@ -116,6 +116,45 @@ def save_base(cwd, branch, base):
     _write_json(state_dir(cwd) / "bases.json", bases)
 
 
+REPO_CONFIG_NAME = ".kimi/worktree-guard.json"
+
+
+def load_repo_config(root):
+    """读主 checkout 根的可选仓库级配置 .kimi/worktree-guard.json。
+
+    用 JSON 而非 TOML：老 Python 没有内置 tomllib。文件不存在/损坏时返回空配置
+    （fail-open，配置是可选项，绝不能影响 create 主流程）。
+    """
+    cfg = _read_json(Path(root) / REPO_CONFIG_NAME)
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def run_post_create_commands(commands, wt_path):
+    """在新副本内逐个执行 post_create_commands（cwd=新副本）。
+
+    best-effort：任何一条失败只记录警告，不影响 create 成功。返回结果摘要行。
+    用于仓库特定的编译环境准备（如复制 gradle-wrapper.jar、config.bytes）。
+    """
+    results = []
+    for cmd in commands:
+        if not isinstance(cmd, str) or not cmd.strip():
+            continue
+        try:
+            p = subprocess.run(
+                cmd, shell=True, cwd=str(wt_path),
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=300,
+            )
+            if p.returncode == 0:
+                results.append(f"  ✅ {cmd}")
+            else:
+                detail = ((p.stderr or "") + (p.stdout or "")).strip()[:200]
+                results.append(f"  ⚠️ {cmd}（退出码 {p.returncode}）{detail}")
+        except Exception as e:
+            results.append(f"  ⚠️ {cmd}（执行异常: {type(e).__name__}: {e}）")
+    return results
+
+
 def ensure_local_exclude(main, rel_path):
     """把路径追加到 .git/info/exclude（本地排除，不进版本库，所有 worktree 共享）。
 
@@ -233,10 +272,20 @@ def cmd_create(params, cwd):
     lines = [f"✅ worktree 已创建\n- 路径: {wt_path}\n- 分支: {branch}（基于 {base}）"]
     if not ignored:
         lines.append(f"- 已将 {parent}/ 追加到 .git/info/exclude（本地排除，防 add -A 卷入）")
+
+    # 仓库级配置：post_create_commands 在新副本内逐个执行（best-effort，失败只警告）
+    post_cmds = load_repo_config(root).get("post_create_commands")
+    if isinstance(post_cmds, list) and post_cmds:
+        results = run_post_create_commands(post_cmds, wt_path)
+        if results:
+            lines.append(f"\npost_create_commands（来自 {REPO_CONFIG_NAME}，best-effort）:")
+            lines.extend(results)
+
     lines.append(
         "\n下一步:\n"
         "1. enter 进入该副本后再做任何文件修改\n"
-        "2. 如项目需要编译环境设置（复制未跟踪资源等），在副本内自行执行"
+        "2. 如项目需要编译环境设置（复制未跟踪资源等），可在主 checkout 根的 "
+        f"{REPO_CONFIG_NAME} 配置 post_create_commands 自动执行"
     )
     ok("\n".join(lines))
 
@@ -289,6 +338,7 @@ def cmd_enter(params, cwd):
 def cmd_exit(params, cwd):
     action = params.get("action", "keep")
     confirm_remove = params.get("confirm_remove", False)
+    delete_branch = bool(params.get("delete_branch", False))
     state = load_state(cwd)
     if not state:
         return fail("当前没有活动 worktree（状态文件不存在或已退出）。")
@@ -313,10 +363,35 @@ def cmd_exit(params, cwd):
             return fail("action=remove 需要 confirm_remove=true 显式确认。\n" + "\n".join(lines))
         if n_dirty:
             return fail("工作区有未提交改动，拒绝删除。请先提交或人工清理。\n" + "\n".join(lines))
-        rc, out = run_git(["worktree", "remove", path], main_root(cwd))
-        if rc != 0:
-            return fail(f"git worktree remove 失败: {out}\n" + "\n".join(lines))
-        lines.append(f"🗑️ 副本目录已删除（分支 {branch} 保留；删分支需用户明确授权后人工执行）")
+        if Path(path).is_dir():
+            rc, out = run_git(["worktree", "remove", path], main_root(cwd))
+            if rc != 0:
+                return fail(f"git worktree remove 失败: {out}\n" + "\n".join(lines))
+            lines.append(f"🗑️ 副本目录已删除（{path}）")
+        else:
+            # 幂等：目录已不存在（如被外部删除）视为移除成功，照常清理登记状态；
+            # 顺带 prune 掉 git 侧的 worktree 登记残留（best-effort）
+            run_git(["worktree", "prune"], main_root(cwd))
+            lines.append(f"🗑️ 副本目录已不存在（{path}），视为已移除，登记状态照常清理。")
+
+        # delete_branch：一等删分支入口。只有已合并进 base 才删（未合并明确拒绝并保留）
+        if delete_branch:
+            if not branch:
+                lines.append("⚠️ 登记状态中无分支名，跳过 delete_branch。")
+            else:
+                rc, _ = run_git(["merge-base", "--is-ancestor", branch, base], main_root(cwd))
+                if rc != 0:
+                    lines.append(f"🔴 分支 {branch} 未合并进 {base}，拒绝删除，分支保留。")
+                else:
+                    rc, out = run_git(["branch", "-d", branch], main_root(cwd))
+                    if rc == 0:
+                        lines.append(f"🗑️ 分支 {branch} 已删除（已合并进 {base}）。")
+                    else:
+                        lines.append(f"⚠️ 分支 {branch} 删除失败: {out}（分支保留）")
+        elif branch:
+            lines.append(f"分支 {branch} 保留（如需一并删除，传 delete_branch=true，且须已合并进 {base}）。")
+    elif delete_branch:
+        return fail("delete_branch 仅在 action=remove 时有效（且需 confirm_remove=true）。")
 
     clear_state(cwd)
     lines.append("\n✅ 活动状态已清除。")
