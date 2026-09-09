@@ -26,7 +26,8 @@
 
 已知边界（hooks 按官方定位是提醒/轻量拦截，不是唯一安全屏障）：
 - fail-open：脚本异常、超时、找不到 git 时都放行；
-- Bash 正则只匹配以 git 直接开头的简单命令，`cd x && git merge` 这类组合命令可能绕过。
+- Bash 检查能识别行首/&&/;/| 之后的 git 命令及前导 cd 段（推算有效工作目录），
+  但更深层的 shell 语义（变量、子shell、xargs 等）不做完整解析，仍可能绕过。
 
 设计原则：fail-open —— 任何内部异常都放行（exit 0），绝不阻塞 Agent 正常工作。
 """
@@ -43,20 +44,24 @@ DEFAULT_PROTECTED = ("master", "main")
 # 与本脚本同包的 wt.py（hooks/ 的兄弟目录 scripts/）
 WT_TOOL = str(Path(__file__).resolve().parent.parent / "scripts" / "wt.py")
 
-# git 全局选项（-C <path> / -c <k=v>）可出现于子命令之前，正则统一容忍
-_GIT_PREFIX = r"\bgit\s+(?:(?:-C|-c)\s+\S+\s+)*"
-GIT_MUTATE_RE = re.compile(_GIT_PREFIX + r"(merge|rebase|pull)\b", re.IGNORECASE)
+# git 命令位置锚点：只匹配作为命令出现的 git（行首或 &&/||/;/| 之后），
+# 避免 commit message、echo 文本里出现的 "git merge" 字样误触发拦截
+_GIT_PREFIX = r"(?:^|[;&|]+)\s*git\s+(?:(?:-C|-c)\s+\S+\s+)*"
+# (?![\w-]) 排除 merge-base / merge-file 等只读子命令被误吞为 merge
+GIT_MUTATE_RE = re.compile(_GIT_PREFIX + r"(merge|rebase|pull)(?![\w-])", re.IGNORECASE)
 GIT_MERGE_TARGET_RE = re.compile(
-    _GIT_PREFIX + r"(merge|rebase)\s+(" + BRANCH_PREFIX + r"[^\s;|&\"'<>()]+)\b",
+    _GIT_PREFIX + r"(merge|rebase)(?![\w-])\s+(" + BRANCH_PREFIX + r"[^\s;|&\"'<>()]+)\b",
     re.IGNORECASE,
 )
-GIT_PUSH_PROTECTED_RE = re.compile(r"\bgit\s+push\b.*\b(master|main)\b", re.IGNORECASE)
+GIT_PUSH_PROTECTED_RE = re.compile(_GIT_PREFIX + r"push\b.*\b(master|main)\b", re.IGNORECASE)
 GIT_PUSH_DEFAULT_RE = re.compile(r"^\s*git\s+push\s*$", re.IGNORECASE)
 GIT_DEL_WORKTREE_RE = re.compile(
-    r"\bgit\s+branch\s+(-[dD])\s+(" + BRANCH_PREFIX + r"[^\s;|&\"'<>()]+)\b",
+    _GIT_PREFIX + r"branch\s+(-[dD])\s+(" + BRANCH_PREFIX + r"[^\s;|&\"'<>()]+)\b",
     re.IGNORECASE,
 )
 GIT_CHECKOUT_RE = re.compile(_GIT_PREFIX + r"(checkout|switch)\s+([^\s;|&\"'<>()-][^\s;|&\"'<>()]*)", re.IGNORECASE)
+# 命令串前导的 cd <path> && / cd <path>; 段（用于推算有效工作目录）
+CD_PREFIX_RE = re.compile(r"""^\s*cd\s+("[^"]+"|'[^']+'|\S+)\s*(?:&&|;)\s*""", re.IGNORECASE)
 
 
 def norm(p):
@@ -80,6 +85,35 @@ def git_common_dir(cwd):
     if rc != 0 or not common:
         return None
     return os.path.normpath(common if os.path.isabs(common) else os.path.join(cwd, common))
+
+
+def effective_cwd(command, session_cwd):
+    """解析命令串前导的 cd <path> && / cd <path>; 段，算出有效工作目录。
+
+    为什么需要：hook 按会话 cwd 预检整条命令串，但 `cd /elsewhere && git merge`
+    的实际作用目标是 cd 之后的目录。只处理行首连续的 cd 段（中间夹其他命令就停），
+    与 shell 的 &&/; 短路语义足够近似；相对路径基于上一层有效 cwd 逐级解析。
+    """
+    cwd = session_cwd
+    while True:
+        m = CD_PREFIX_RE.match(command)
+        if not m:
+            return cwd
+        p = m.group(1).strip("\"'")
+        cwd = p if os.path.isabs(p) else os.path.join(cwd, p)
+        command = command[m.end():]
+
+
+def in_guarded_repo(eff_cwd, guarded_common):
+    """有效工作目录是否属于被守卫仓库（本 hook 守护的主 checkout 或其任一 linked worktree）。
+
+    判定口径：有效 cwd 解析出的 git common dir 与会话仓库的 common dir 相同
+    （linked worktree 的 common dir 指向主 checkout .git，天然覆盖两类位置）；
+    比较用 norm() 归一（Windows 大小写不敏感）。
+    有效 cwd 不是 git 仓库或解析失败 → 不属于被守卫仓库。
+    """
+    eff_common = git_common_dir(eff_cwd)
+    return eff_common is not None and norm(eff_common) == norm(guarded_common)
 
 
 def current_branch(cwd):
@@ -206,6 +240,20 @@ def check_bash_tool(tool_input, context):
     if context.get("_allow_main"):
         return
 
+    # ---- 0. 作用域限定：git 变更类拦截只在有效工作目录属于被守卫仓库时生效 ----
+    # 解析命令串前导的 cd 段得到有效 cwd；有效 cwd 在被守卫仓库（主 checkout 或其
+    # linked worktree）之外的命令一律放行 git 规则（写文件路径检查在
+    # check_write_tool 按目标路径判定，不受此影响）。
+    eff = effective_cwd(command, context["cwd"])
+    if not in_guarded_repo(eff, context["_common"]):
+        return
+    if norm(eff) != norm(context["cwd"]):
+        # 分支/是否在副本等上下文按有效 cwd 重新判定
+        branch = current_branch(eff)
+        branch_l = branch.lower()
+        in_worktree = in_linked_worktree(eff)
+        context = dict(context, cwd=eff, branch=branch, in_worktree=in_worktree)
+
     # ---- 1. git push 到 master/main 需要授权 ----
     if GIT_PUSH_PROTECTED_RE.search(command) or (GIT_PUSH_DEFAULT_RE.search(command) and branch_l in protected):
         block("git push 到受保护分支（master/main），必须用户明确授权。", context)
@@ -286,6 +334,7 @@ def main():
         "_active_wt": active_wt,
         "_allow_main": allow_main,
         "_protected": protected,
+        "_common": common,
     }
 
     if tool_name in ("Write", "Edit"):

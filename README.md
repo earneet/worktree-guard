@@ -1,4 +1,4 @@
-# worktree-guard (Kimi Code 插件) v1.1.0
+# worktree-guard (Kimi Code 插件) v1.1.1
 
 > EN: A Kimi Code CLI plugin that enforces a strict git-worktree workflow for AI agents:
 > all edits happen in an isolated `worktree-<task>` branch copy, the main checkout is
@@ -17,6 +17,13 @@
 > ⚠️ `authorize-main` and any guarded mutation command (e.g. `git merge`) must be issued
 > as **separate tool/Bash calls** — the hook pre-checks the whole command string before
 > execution, so `authorize && git merge` in one line is still blocked.
+>
+> v1.1.1: hook precision fixes — mutation regexes no longer swallow read-only subcommands
+> (`git merge-base` / `git merge-file`) and only match `git` in command position (line
+> start or after `&&`/`;`/`|`), so commit messages or echoed text containing "git merge"
+> no longer trigger; git-mutation rules are now scoped to the guarded repo — a leading
+> `cd <path> &&` chain is resolved to an effective cwd, and commands whose effective cwd
+> is outside the guarded repo (main checkout or its linked worktrees) are allowed.
 
 强制 git worktree 工作流的 Kimi Code CLI 插件：
 
@@ -100,8 +107,10 @@ echo '{}' | python scripts/wt.py revoke-main
 | 主 checkout 根存在 `.kimi/worktree-state.json`（仓库专用守卫） | ✅ 全部放行（让位） |
 | 仓库外路径、非 git 目录 | ✅ 放行 |
 
-已知边界：hook 按官方定位是**轻量拦截**而非唯一安全屏障——fail-open（脚本异常放行），
-且 Bash 正则只匹配以 `git` 直接开头的简单命令（`cd x && git merge` 类组合命令可能绕过）。
+已知边界：hook 按官方定位是**轻量拦截**而非唯一安全屏障——fail-open（脚本异常放行）。
+Bash 检查能识别行首 / `&&` / `;` / `|` 之后的 git 命令，并解析前导 `cd <path> &&` 段
+推算有效工作目录（git 变更类拦截只在有效 cwd 属于被守卫仓库时生效）；但更深层的 shell
+语义（变量、子shell、xargs 等）不做完整解析，仍可能绕过。
 
 ## 与仓库专用守卫共存（让位规则）
 
@@ -110,6 +119,24 @@ echo '{}' | python scripts/wt.py revoke-main
 检测（廉价、只读、fail-open），存在即 exit 0。共存契约：**通用守卫让位给仓库专用守卫**，
 避免两套守卫重复拦截、反馈互相打架。状态栏脚本同样让位——检测到该文件时不再展示本插件
 的活动副本状态，避免显示空/旧状态误导。
+
+## 与仓库定制版的关系 / 同步纪律
+
+本插件（B）与 xkx 仓库的专用守卫（A，`xkx-worktree` 技能 + `~/.kimi-code/hooks/guard_worktree.py`
++ `~/.kimi-code/worktree/wt.py`）同源。实证结论（2026-09-09 复盘核实）：**A 在先，B 是 A 的
+通用化/插件化抽取**——A 各文件 mtime（2026-08-06/07）早于 B 仓库的初始提交 v1.0.0
+（2026-08-07 15:17），且 B 的代码是 A 的泛化（硬编码 master → master/main 泛化、
+`.kimi/` 状态 → git common dir 状态、xkx 固定路径 → 按 cwd 动态解析），两 hook 约 160 行
+逐字相同（函数集、正则族、fail-open 措辞一致）。因此措辞上 A 不是 B 的 fork，而是 B 的
+上游原型；两者互为同源定制版。
+
+同步纪律约定：
+
+- **A 侧的通用性改进（与 xkx 无关的 hook/CLI 缺陷修复、语义增强）必须回同步到 B**；
+- **B 侧的通用改进如涉及 A 已有定制点**（svn 禁令、master-only 口径、`.kimi/` 状态文件、
+  xkx 固定路径），**知会 A 的维护者评估后再落地**，不直接覆盖 A 的定制；
+- 两侧同一逻辑（如拦截正则、让位规则）保持语义一致，改动时在 commit message / 复盘文档
+  里互相标注。
 
 ## 仓库级配置：post_create_commands
 

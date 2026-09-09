@@ -103,7 +103,9 @@ echo '{}' | python "${KIMI_SKILL_DIR}/../../scripts/wt.py" revoke-main
 
 已知边界（hooks 是轻量拦截，不是唯一安全屏障，仍需自律）：
 - fail-open：hook 脚本异常/超时时放行；
-- Bash 正则只匹配以 `git` 直接开头的简单命令，`cd x && git merge` 这类组合命令可能绕过。
+- Bash 检查能识别行首/`&&`/`;`/`|` 之后的 git 命令，并解析前导 `cd <path> &&` 段推算
+  有效工作目录（git 变更类拦截只在有效 cwd 属于被守卫仓库时生效）；更深层的 shell 语义
+  （变量、子shell、xargs 等）不做完整解析，仍可能绕过。
 
 触发拦截时，按 stderr 指引操作：创建/进入正确副本，或先获得用户授权。
 
