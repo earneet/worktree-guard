@@ -90,6 +90,13 @@ echo '{}' | python "${KIMI_SKILL_DIR}/../../scripts/wt.py" revoke-main
 状态文件），本插件的 hook 对该仓库**完全静默放行**（通用守卫让位给专用守卫），状态栏
 也不再展示本插件的活动副本状态。检测只做文件存在性判断，廉价、只读、fail-open。
 
+**锚点持久化契约**：专用守卫一侧必须保证该锚点文件**持久存在**——空闲态写
+`active: false` 而不是删除文件；否则空闲态让位失效，两套守卫会重复拦截。
+
+本插件（B）是上游通用版；xkx 仓库的专用守卫 A = B 为基座 + xkx delta（svn 拦截、
+`.kimi/` 持久锚点状态文件、`authorize-master` 命名、xkx 文案、xkx create 自动设置）。
+**通用改进先进 B 再同步到 A；A 的 delta 改动若具通用价值则泛化后回流 B。**
+
 ## 纪律兜底（PreToolUse hook）
 
 插件 hook 在每次 `Write` / `Edit` / `Bash` 调用前执行，拦截时通过 stderr 反馈完整上下文（当前分支、位置、是否在 worktree、活动 worktree、目标路径/命令）。

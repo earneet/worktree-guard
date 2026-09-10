@@ -1,4 +1,4 @@
-# worktree-guard (Kimi Code 插件) v1.1.1
+# worktree-guard (Kimi Code 插件) v1.1.2
 
 > EN: A Kimi Code CLI plugin that enforces a strict git-worktree workflow for AI agents:
 > all edits happen in an isolated `worktree-<task>` branch copy, the main checkout is
@@ -24,6 +24,14 @@
 > no longer trigger; git-mutation rules are now scoped to the guarded repo — a leading
 > `cd <path> &&` chain is resolved to an effective cwd, and commands whose effective cwd
 > is outside the guarded repo (main checkout or its linked worktrees) are allowed.
+>
+> v1.1.2: (1) **stale-state self-healing** — when `state.json` says a worktree is active
+> but its registered path no longer exists (deleted externally without `exit`), the hook
+> treats the repo as having no active worktree and removes the stale state, instead of
+> blocking the whole repo on a ghost copy; (2) documentation: the coexistence yield rule
+> now states its persistence contract — the repo-specific guard's `.kimi/worktree-state.json`
+> anchor file must persist (with `active: false` meaning idle), or the yield rule lapses
+> whenever the repo-specific guard exits and both guards would double-block.
 
 强制 git worktree 工作流的 Kimi Code CLI 插件：
 
@@ -120,23 +128,34 @@ Bash 检查能识别行首 / `&&` / `;` / `|` 之后的 git 命令，并解析�
 避免两套守卫重复拦截、反馈互相打架。状态栏脚本同样让位——检测到该文件时不再展示本插件
 的活动副本状态，避免显示空/旧状态误导。
 
-## 与仓库定制版的关系 / 同步纪律
+**锚点持久化契约**：让位规则依赖的是该状态文件的**存在性**，因此专用守卫一侧必须保证
+锚点文件**持久存在**——空闲态应写为 `active: false`（保留最后一会话信息无妨），而不是
+退出时删除文件。若专用守卫在 exit 后删除该文件，空闲态让位即失效，两套守卫会重复拦截
+（2026-09-10 实测踩到：xkx 仓库双拦截即源于此）。
 
-本插件（B）与 xkx 仓库的专用守卫（A，`xkx-worktree` 技能 + `~/.kimi-code/hooks/guard_worktree.py`
-+ `~/.kimi-code/worktree/wt.py`）同源。实证结论（2026-09-09 复盘核实）：**A 在先，B 是 A 的
-通用化/插件化抽取**——A 各文件 mtime（2026-08-06/07）早于 B 仓库的初始提交 v1.0.0
-（2026-08-07 15:17），且 B 的代码是 A 的泛化（硬编码 master → master/main 泛化、
-`.kimi/` 状态 → git common dir 状态、xkx 固定路径 → 按 cwd 动态解析），两 hook 约 160 行
-逐字相同（函数集、正则族、fail-open 措辞一致）。因此措辞上 A 不是 B 的 fork，而是 B 的
-上游原型；两者互为同源定制版。
+## 与仓库专用守卫（A / xkx-worktree）的关系 / 同步纪律
+
+**B（本插件）是上游通用版。** xkx 仓库的专用守卫 A（`xkx-worktree` 技能 +
+`~/.kimi-code/hooks/guard_worktree.py` + `~/.kimi-code/worktree/wt.py`）自 2026-09-10 起
+重建为 **A = B（v1.1.2+）为基座 + xkx delta 重灌**（历史上 A 在先、B 是 A 的通用化抽取，
+见 v1.1.1 及之前版本的说明；自 v1.1.2 起代码方向反转，以 B 为底）。
+
+A 侧保留的 xkx delta（不属于通用层，永不回流）：
+
+1. svn 拦截（`svn update|commit` 只允许主副本 master 且须 `authorize-master` 授权）；
+2. 状态文件固定在主副本 `.kimi/worktree-state.json`（即本插件让位规则的锚点，
+   **持久存在**，`active:false` 表空闲），不用 git common dir 方案；
+3. 子命令命名 `authorize-master` / `revoke-master`（master-only 口径）；
+4. 拦截消息与文案里的 xkx 仓库纪律说明（svn sync 只在主副本 master、AGENTS.md 等）；
+5. xkx 专属 create 自动设置（编译环境：gradle-wrapper.jar / build-logic 扩展源 /
+   `_shared/bin` junction 等）。
 
 同步纪律约定：
 
-- **A 侧的通用性改进（与 xkx 无关的 hook/CLI 缺陷修复、语义增强）必须回同步到 B**；
-- **B 侧的通用改进如涉及 A 已有定制点**（svn 禁令、master-only 口径、`.kimi/` 状态文件、
-  xkx 固定路径），**知会 A 的维护者评估后再落地**，不直接覆盖 A 的定制；
-- 两侧同一逻辑（如拦截正则、让位规则）保持语义一致，改动时在 commit message / 复盘文档
-  里互相标注。
+- **通用改进一律先进 B（开发目录 `F:/workspace_2/worktree-guard`），再同步到 A**；
+- **A 的 delta 改动若被证明具有通用价值，则泛化后回流 B**；
+- 两侧同一逻辑（拦截正则、作用域判定、让位规则、自愈逻辑）保持语义一致，改动时在
+  commit message / 复盘文档里互相标注。
 
 ## 仓库级配置：post_create_commands
 

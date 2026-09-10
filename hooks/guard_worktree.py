@@ -12,6 +12,8 @@
    push 到 master/main 等违反工作流的操作。
 6. 让位规则：主 checkout 根存在 .kimi/worktree-state.json（仓库专用守卫的状态文件）
    时，本 hook 对该仓库完全静默放行——通用守卫让位给专用守卫。
+7. 陈旧状态自愈：state 登记的活动副本路径已不存在（被外部删除、未走 exit）时，
+   按无活动 worktree 处理并顺手清除残留状态，避免幽灵副本导致全仓库误拦。
 
 所有拦截都通过 stderr 把完整上下文（当前分支、位置、活动 worktree、目标路径/命令）
 反馈给 LLM，确保模型在操作前一定意识到自己在哪、该往哪写。
@@ -146,8 +148,19 @@ def _read_json(f):
 
 
 def load_state(common):
-    s = _read_json(Path(common) / STATE_DIR_NAME / "state.json")
-    return s if s and s.get("active") else None
+    f = Path(common) / STATE_DIR_NAME / "state.json"
+    s = _read_json(f)
+    if not s or not s.get("active"):
+        return None
+    # 陈旧状态自愈：登记的副本路径已不存在（如被外部删除、未走 exit）时，
+    # 按无活动 worktree 处理并顺手清除残留状态——否则幽灵副本会导致全仓库误拦。
+    if not Path(s.get("path") or "").is_dir():
+        try:
+            f.unlink()
+        except Exception:
+            pass
+        return None
+    return s
 
 
 def load_override(common):

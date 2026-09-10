@@ -1,6 +1,6 @@
 {
   "name": "worktree-guard",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "强制 git worktree 工作流：所有开发在隔离副本进行，主 checkout 写保护，合并需授权（PreToolUse hook 硬约束 + Agent 技能）",
   "keywords": ["git", "worktree", "workflow", "guard", "hooks"],
   "license": "MIT",
