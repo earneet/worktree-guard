@@ -13,7 +13,8 @@
 6. 让位规则：主 checkout 根存在 .kimi/worktree-state.json（仓库专用守卫的状态文件）
    时，本 hook 对该仓库完全静默放行——通用守卫让位给专用守卫。
 7. 陈旧状态自愈：state 登记的活动副本路径已不存在（被外部删除、未走 exit）时，
-   按无活动 worktree 处理并顺手清除残留状态，避免幽灵副本导致全仓库误拦。
+   按无活动 worktree 处理并把状态改写为 active:false（登记保留，供 exit 残留清理），
+   避免幽灵副本导致全仓库误拦。
 
 所有拦截都通过 stderr 把完整上下文（当前分支、位置、活动 worktree、目标路径/命令）
 反馈给 LLM，确保模型在操作前一定意识到自己在哪、该往哪写。
@@ -153,10 +154,13 @@ def load_state(common):
     if not s or not s.get("active"):
         return None
     # 陈旧状态自愈：登记的副本路径已不存在（如被外部删除、未走 exit）时，
-    # 按无活动 worktree 处理并顺手清除残留状态——否则幽灵副本会导致全仓库误拦。
+    # 按无活动 worktree 处理——否则幽灵副本会导致全仓库误拦。
+    # 自愈改写 active:false 而不是删除文件：path/branch 登记保留，
+    # 供 wt.py exit 的残留清理模式一步完成分支/登记清理。
     if not Path(s.get("path") or "").is_dir():
+        s["active"] = False
         try:
-            f.unlink()
+            f.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
         return None

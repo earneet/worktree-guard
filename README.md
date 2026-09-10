@@ -1,4 +1,4 @@
-# worktree-guard (Kimi Code 插件) v1.1.2
+# worktree-guard (Kimi Code 插件) v1.1.3
 
 > EN: A Kimi Code CLI plugin that enforces a strict git-worktree workflow for AI agents:
 > all edits happen in an isolated `worktree-<task>` branch copy, the main checkout is
@@ -32,6 +32,15 @@
 > now states its persistence contract — the repo-specific guard's `.kimi/worktree-state.json`
 > anchor file must persist (with `active: false` meaning idle), or the yield rule lapses
 > whenever the repo-specific guard exits and both guards would double-block.
+>
+> v1.1.3: (1) **residual-cleanup mode in `exit`** — when the state file is already
+> `active: false` but still carries a `path`/`branch` registration (left by hook
+> self-healing or a previous exit), `exit` no longer refuses; it runs the normal cleanup
+> flow against the registered path/branch (`remove` rules, `delete_branch`, registration
+> clearing) and says so explicitly. Only a state with no registration at all is still
+> refused; (2) hook stale-state self-healing now **rewrites `active: false`** instead of
+> deleting `state.json`, preserving the registration so a single `exit` can finish the
+> cleanup (v1.1.2 deleted the file, which made the leftover branch unreachable by `exit`).
 
 强制 git worktree 工作流的 Kimi Code CLI 插件：
 
@@ -182,6 +191,12 @@ A 侧保留的 xkx delta（不属于通用层，永不回流）：
   worktree 分支是否已合并进其 base 分支（`git merge-base --is-ancestor <branch> <base>`，
   base 来自登记状态 `state.json` / `bases.json`），已合并才执行 `git branch -d`；
   未合并则明确拒绝并保留分支。所有结果都在输出的 content 里报告。
+- **残留清理模式**（v1.1.3）：状态文件已是 `active:false` 但仍带 path/branch 登记
+  （hook 陈旧自愈所留——自愈现在改写 `active:false` 而非删文件，正为此模式保留登记）时，
+  `exit` 不再拒绝，而是按登记的 path/branch 照常执行上述清理流程，输出中明确标注
+  "残留清理（非正常退出）"；清理完成即清除登记。残留 + `action="keep"` 则只报告、
+  登记保留（供后续 remove 一步清理）。状态文件里连 path/branch 都没有时，`exit`
+  才保持拒绝（"无任何登记信息"）。
 
 ## 状态文件位置
 

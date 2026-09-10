@@ -32,6 +32,8 @@ echo '{"task_name": "fix-login", "base_branch": "main", "worktree_parent": ".wor
 echo '{"path": ".worktrees/worktree-add-drop-module"}' | python "${KIMI_SKILL_DIR}/../../scripts/wt.py" enter
 
 # 退出当前活动 worktree（保留副本，汇报领先提交与未提交改动）
+# 残留清理模式（v1.1.3）：状态已是 active:false 但仍带 path/branch 登记（hook 自愈所留）时，
+# exit 不拒绝，按登记照常走清理流程并明确标注"残留清理"；连登记都没有才拒绝
 echo '{"action": "keep"}' | python "${KIMI_SKILL_DIR}/../../scripts/wt.py" exit
 
 # 删除副本（需显式确认且工作区干净；只删目录，分支保留；目录已被外部删除时幂等成功）

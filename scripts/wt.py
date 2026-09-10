@@ -339,13 +339,24 @@ def cmd_exit(params, cwd):
     action = params.get("action", "keep")
     confirm_remove = params.get("confirm_remove", False)
     delete_branch = bool(params.get("delete_branch", False))
-    state = load_state(cwd)
-    if not state:
+    raw = _read_json(state_dir(cwd) / "state.json")
+    if not raw:
         return fail("当前没有活动 worktree（状态文件不存在或已退出）。")
+    # 残留清理模式：hook 自愈（或上次退出）已把状态置为 active:false，但 path/branch
+    # 登记还在——按登记照常走清理流程（remove 规则 / delete_branch / 清除登记），
+    # 而不是拒绝。真正无任何登记（连 path/branch 都没有）时才保持拒绝。
+    residual = not raw.get("active")
+    if residual and not (raw.get("path") or raw.get("branch")):
+        return fail("当前没有活动 worktree（状态文件存在，但已无任何登记信息）。")
+    state = raw
 
-    path, branch = state["path"], state.get("branch", "")
+    path, branch = state.get("path", ""), state.get("branch", "")
     base = state.get("base", "master")
-    lines = [f"退出 worktree: {path}（分支 {branch}，基于 {base}）"]
+    if residual:
+        lines = [f"残留清理（登记已非活动——hook 自愈或上次退出所留，非正常退出）: "
+                 f"{path}（分支 {branch}，基于 {base}）"]
+    else:
+        lines = [f"退出 worktree: {path}（分支 {branch}，基于 {base}）"]
 
     if Path(path).is_dir():
         n_dirty, dirty = dirty_summary(path)
@@ -393,9 +404,16 @@ def cmd_exit(params, cwd):
     elif delete_branch:
         return fail("delete_branch 仅在 action=remove 时有效（且需 confirm_remove=true）。")
 
-    clear_state(cwd)
-    lines.append("\n✅ 活动状态已清除。")
-    if action == "keep":
+    if residual and action == "keep":
+        # 残留 + keep：什么都没删，登记保留（否则丢失 path/branch，后续无法一步清理）
+        lines.append(
+            "\n📌 登记保留（仍为非活动残留）。确认清理请用 "
+            "exit(action=\"remove\", confirm_remove=true[, delete_branch=true])。"
+        )
+    else:
+        clear_state(cwd)
+        lines.append("\n✅ 残留登记已清除。" if residual else "\n✅ 活动状态已清除。")
+    if action == "keep" and not residual:
         lines.append(
             f"📌 报告口径：worktree `{branch}` 已就绪，待您确认是否合并。"
             "未获用户明确授权前，禁止 merge / rebase 进主分支，也禁止删除分支。"
